@@ -1,11 +1,22 @@
+/**
+ * |-------------------eth header------------------|
+ * |<--dst mac(6)-->|<--src mac(6)-->|<--type(2)-->|
+ * 
+ * |<----------------------------------------------------------------eth data-----------------------------------------------------------------|
+ * |<--hardware type(2)-->|<--proto type(2)-->|<--1-->|<--1-->|<--optcode(2)-->|<--src mac(6)-->|<--src ip(4)-->|<--dst mac(6)-->|<--dst ip(4)-->|
+ */
 // linux arp cli https://stackoverflow.com/questions/16710040/arp-request-and-reply-using-c-socket-programming
+
 #include <sys/socket.h>
 #include <sys/ioctl.h>
+#include <ifaddrs.h>
+#include <netdb.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <netinet/if_ether.h>
+#include <net/if.h>
 #include <net/if_arp.h>
 #include <arpa/inet.h>  //htons etc
 
@@ -19,10 +30,6 @@
 #define BUF_SIZE 60
 #define    IFNAMSIZ    16
 
-#define debug(x...) printf(x);printf("\n");
-#define info(x...) printf(x);printf("\n");
-#define warn(x...) printf(x);printf("\n");
-#define err(x...) printf(x);printf("\n");
 
 struct arp_header {
     unsigned short hardware_type;
@@ -35,17 +42,6 @@ struct arp_header {
     unsigned char target_mac[MAC_LENGTH];
     unsigned char target_ip[IPV4_LENGTH];
 };
-struct ifreq{
-    char ifr_name[IFNAMSIZ];
-     struct  sockaddr  ifru_addr;
-        struct  sockaddr  ifru_dstaddr;
-        struct  sockaddr  ifru_broadaddr;
-        struct  sockaddr  ifru_netmask;
-        struct  sockaddr  ifru_hwaddr;
-        short  ifru_flags;
-        int     ifru_metric;
-        caddr_t ifru_data;
-};
 
 struct sockaddr_ll {
                unsigned short sll_family;   /* Always AF_PACKET */
@@ -55,7 +51,7 @@ struct sockaddr_ll {
                unsigned char  sll_pkttype;  /* Packet type */
                unsigned char  sll_halen;    /* Length of address */
                unsigned char  sll_addr[8];  /* Physical-layer address */
-           };
+};
 
 /*
  * Converts struct sockaddr with an IPv4 address to network byte order uin32_t.
@@ -189,49 +185,26 @@ out:
 int get_if_info(const char *ifname, uint32_t *ip, char *mac, int *ifindex)
 {
     debug("get_if_info for %s", ifname);
-    int err = -1;
-    struct ifreq ifr;
-    int sd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ARP));
-    if (sd <= 0) {
-        perror("socket()");
-        goto out;
-    }
-    if (strlen(ifname) > (IFNAMSIZ - 1)) {
-        printf("Too long interface name, MAX=%i\n", IFNAMSIZ - 1);
-        goto out;
-    }
+    struct ifaddrs *ifap;
+    getifaddrs(&ifap);
 
-    strcpy(ifr.ifr_name, ifname);
-
-    //Get interface index using name
-    if (ioctl(sd, SIOCGIFINDEX, &ifr) == -1) {
-        perror("SIOCGIFINDEX");
-        goto out;
+    for (struct ifaddrs *ifa = ifap; ifa; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr && (ifa->ifa_addr->sa_family == AF_INET6)) {
+            char addr[INET6_ADDRSTRLEN];
+            getnameinfo(ifa->ifa_addr, sizeof(struct sockaddr_in6), addr, sizeof(addr), NULL, 0, NI_NUMERICHOST);
+       
+            // printf("Interface: %s\tAddress: %s\n", ifa->ifa_name, addr);
+        } else if (ifa->ifa_addr && ifa->ifa_addr->sa_family == AF_INET) {
+            struct sockaddr_in *sa = (struct sockaddr_in *)ifa->ifa_addr;
+            char *addr = inet_ntoa(sa->sin_addr);
+            if(ifa->ifa_name==ifname){
+                *mac=*addr;
+                break;
+            }
+            // printf("Interface: %s\tAddress: %s\n", ifa->ifa_name, addr);
+        }
     }
-    *ifindex = ifr.ifr_ifindex;
-    printf("interface index is %d\n", *ifindex);
-
-    //Get MAC address of the interface
-    if (ioctl(sd, SIOCGIFHWADDR, &ifr) == -1) {
-        perror("SIOCGIFINDEX");
-        goto out;
-    }
-
-    //Copy mac address to output
-    memcpy(mac, ifr.ifr_hwaddr.sa_data, MAC_LENGTH);
-
-    if (get_if_ip4(sd, ifname, ip)) {
-        goto out;
-    }
-    debug("get_if_info OK");
-
-    err = 0;
-out:
-    if (sd > 0) {
-        debug("Clean up temporary socket");
-        close(sd);
-    }
-    return err;
+    freeifaddrs(ifap);
 }
 
 /*
@@ -350,7 +323,7 @@ int test_arping(const char *ifname, const char *ip) {
     while(1) {
         int r = read_arp(arp_fd);
         if (r == 0) {
-            info("Got reply, break out");
+            printf("Got reply, break out\n");
             break;
         }
     }
